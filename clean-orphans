@@ -1,0 +1,61 @@
+#!/bin/bash
+
+echo "🔍 Scanning for orphaned development processes..."
+
+# Find orphans (PPID=1) and calculate stats
+ORPHAN_PIDS=$(ps -eo ppid,pid,command | grep -E 'playwright-mcp|run-driver|context7|mobile-mcp|npm exec @playwright|npm exec @mobilenext|npm exec @upstash|flutter_tester|dart.*(tooling-daemon|devtools --machine|development-service)|log stream.*Runner' | grep -v grep | awk '$1 == 1 {print $2}')
+ADB_PIDS=$(ps aux | grep -E 'adb.*logcat' | grep -v grep | awk '{print $2}')
+
+# Combine PIDs
+PIDS_TO_KILL=""
+[ -n "$ORPHAN_PIDS" ] && PIDS_TO_KILL="$ORPHAN_PIDS"
+[ -n "$ADB_PIDS" ] && PIDS_TO_KILL="$PIDS_TO_KILL $ADB_PIDS"
+PIDS_TO_KILL=$(echo "$PIDS_TO_KILL" | xargs)
+
+if [ -n "$PIDS_TO_KILL" ]; then
+    STATS=$(ps -o rss= -p $PIDS_TO_KILL 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
+    COUNT=$(echo "$STATS" | cut -d'|' -f1)
+    MEM=$(echo "$STATS" | cut -d'|' -f2)
+    
+    echo "🔪 Killing $COUNT orphaned/stale processes (Reclaiming ~$MEM MB)..."
+    echo "$PIDS_TO_KILL" | xargs kill 2>/dev/null
+    echo "✅ Safe orphans cleaned."
+else
+    echo "✅ No safe orphans found. Clean!"
+fi
+
+if [ "$1" == "--deep" ]; then
+    echo ""
+    echo "⚠️ Deep cleanup requested..."
+    
+    # Calculate Kotlin LSP memory
+    KOTLIN_PIDS=$(ps aux | grep -i 'kotlinLsp' | grep -v grep | awk '{print $2}')
+    KOTLIN_PIDS=$(echo "$KOTLIN_PIDS" | xargs)
+    if [ -n "$KOTLIN_PIDS" ]; then
+        K_STATS=$(ps -o rss= -p $KOTLIN_PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
+        K_COUNT=$(echo "$K_STATS" | cut -d'|' -f1)
+        K_MEM=$(echo "$K_STATS" | cut -d'|' -f2)
+        echo "🔪 Killing $K_COUNT Kotlin LSP processes (Reclaiming ~$K_MEM MB)..."
+        pkill -f kotlinLsp 2>/dev/null
+    else
+        echo "✅ No Kotlin LSP processes found."
+    fi
+    
+    # Calculate iOS Simulator memory
+    SIM_PIDS=$(ps aux | grep -i 'CoreSimulator\|Simulator.app' | grep -v grep | awk '{print $2}')
+    SIM_PIDS=$(echo "$SIM_PIDS" | xargs)
+    if [ -n "$SIM_PIDS" ]; then
+        S_STATS=$(ps -o rss= -p $SIM_PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
+        S_COUNT=$(echo "$S_STATS" | cut -d'|' -f1)
+        S_MEM=$(echo "$S_STATS" | cut -d'|' -f2)
+        echo "🔪 Shutting down $S_COUNT iOS Simulator processes (Reclaiming ~$S_MEM MB)..."
+        xcrun simctl shutdown all 2>/dev/null
+    else
+        echo "✅ No iOS Simulator processes found."
+    fi
+    
+    echo "✅ Deep cleanup completed."
+else
+    echo ""
+    echo "💡 Tip: Run 'clean-orphans --deep' to also kill Kotlin LSP and close all iOS simulators."
+fi
