@@ -2,11 +2,11 @@
 
 echo "🔍 Scanning for orphaned development processes..."
 
-# Find orphans (PPID=1) and calculate stats
+# 1. 尋找安全的孤兒進程 (PPID=1)
 ORPHAN_PIDS=$(ps -eo ppid,pid,command | grep -E 'playwright-mcp|run-driver|context7|mobile-mcp|npm exec @playwright|npm exec @mobilenext|npm exec @upstash|flutter_tester|dart.*(tooling-daemon|devtools --machine|development-service)|log stream.*Runner' | grep -v grep | awk '$1 == 1 {print $2}')
 ADB_PIDS=$(ps aux | grep -E 'adb.*logcat' | grep -v grep | awk '{print $2}')
 
-# Combine PIDs
+# 合併需要安全清理的 PID
 PIDS_TO_KILL=""
 [ -n "$ORPHAN_PIDS" ] && PIDS_TO_KILL="$ORPHAN_PIDS"
 [ -n "$ADB_PIDS" ] && PIDS_TO_KILL="$PIDS_TO_KILL $ADB_PIDS"
@@ -24,38 +24,51 @@ else
     echo "✅ No safe orphans found. Clean!"
 fi
 
+# 2. 深度清理模式
 if [ "$1" == "--deep" ]; then
     echo ""
     echo "⚠️ Deep cleanup requested..."
     
-    # Calculate Kotlin LSP memory
-    KOTLIN_PIDS=$(ps aux | grep -i 'kotlinLsp' | grep -v grep | awk '{print $2}')
-    KOTLIN_PIDS=$(echo "$KOTLIN_PIDS" | xargs)
-    if [ -n "$KOTLIN_PIDS" ]; then
-        K_STATS=$(ps -o rss= -p $KOTLIN_PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
-        K_COUNT=$(echo "$K_STATS" | cut -d'|' -f1)
-        K_MEM=$(echo "$K_STATS" | cut -d'|' -f2)
-        echo "🔪 Killing $K_COUNT Kotlin LSP processes (Reclaiming ~$K_MEM MB)..."
-        pkill -f kotlinLsp 2>/dev/null
-    else
-        echo "✅ No Kotlin LSP processes found."
-    fi
+    # 建立一個函式來計算和清理特定關鍵字的進程
+    cleanup_by_name() {
+        local name=$1
+        local label=$2
+        local pattern=$3
+        
+        local PIDS=$(ps aux | grep -E "$pattern" | grep -v grep | awk '{print $2}' | xargs)
+        if [ -n "$PIDS" ]; then
+            local STATS=$(ps -o rss= -p $PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
+            local COUNT=$(echo "$STATS" | cut -d'|' -f1)
+            local MEM=$(echo "$STATS" | cut -d'|' -f2)
+            echo "🔪 Killing $COUNT $label processes (Reclaiming ~$MEM MB)..."
+            echo "$PIDS" | xargs kill 2>/dev/null
+        else
+            echo "✅ No $label processes found."
+        fi
+    }
+
+    # 執行各項深度清理
+    cleanup_by_name "kotlinLsp" "Kotlin LSP" "kotlinLsp"
+    cleanup_by_name "gradle" "Gradle Daemon" "org.gradle.launcher.daemon"
+    cleanup_by_name "flutter_daemon" "Flutter Daemon" "flutter_tools.snapshot daemon"
+    cleanup_by_name "xcodebuild" "Stuck xcodebuild" "xcodebuild"
     
-    # Calculate iOS Simulator memory
-    SIM_PIDS=$(ps aux | grep -i 'CoreSimulator\|Simulator.app' | grep -v grep | awk '{print $2}')
-    SIM_PIDS=$(echo "$SIM_PIDS" | xargs)
-    if [ -n "$SIM_PIDS" ]; then
-        S_STATS=$(ps -o rss= -p $SIM_PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
-        S_COUNT=$(echo "$S_STATS" | cut -d'|' -f1)
-        S_MEM=$(echo "$S_STATS" | cut -d'|' -f2)
-        echo "🔪 Shutting down $S_COUNT iOS Simulator processes (Reclaiming ~$S_MEM MB)..."
-        xcrun simctl shutdown all 2>/dev/null
-    else
-        echo "✅ No iOS Simulator processes found."
+    # macOS 專用的 iOS 模擬器清理
+    if command -v xcrun &> /dev/null; then
+        SIM_PIDS=$(ps aux | grep -E 'CoreSimulator|Simulator.app' | grep -v grep | awk '{print $2}' | xargs)
+        if [ -n "$SIM_PIDS" ]; then
+            S_STATS=$(ps -o rss= -p $SIM_PIDS 2>/dev/null | awk '{sum+=$1; count++} END {printf "%d|%.2f", count, sum/1024}')
+            S_COUNT=$(echo "$S_STATS" | cut -d'|' -f1)
+            S_MEM=$(echo "$S_STATS" | cut -d'|' -f2)
+            echo "🔪 Shutting down iOS Simulators ($S_COUNT processes, Reclaiming ~$S_MEM MB)..."
+            xcrun simctl shutdown all 2>/dev/null
+        else
+            echo "✅ No iOS Simulator processes found."
+        fi
     fi
     
     echo "✅ Deep cleanup completed."
 else
     echo ""
-    echo "💡 Tip: Run 'clean-orphans --deep' to also kill Kotlin LSP and close all iOS simulators."
+    echo "💡 Tip: Run 'clean-orphans --deep' to also kill Kotlin LSP, Gradle Daemons, and iOS Simulators."
 fi
