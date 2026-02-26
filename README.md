@@ -10,6 +10,8 @@ It identifies and kills orphaned background processes (processes where `PPID=1`)
 
 Specially optimized for **macOS** mobile developers (Flutter/iOS/Android) and developers using modern AI tools (MCP servers).
 
+![clean-orphans --deep demo](assets/demo-deep.png)
+
 ## Why You Need This
 
 AI-powered coding tools and mobile development toolchains spawn background processes that **frequently fail to clean up after themselves**. These orphaned processes silently accumulate, consuming **10-20+ GB of RAM** before you even notice your machine slowing down.
