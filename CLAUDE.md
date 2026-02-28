@@ -6,14 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Bash script that safely kills orphaned development processes (PPID=1) to reclaim memory. Supports macOS and Linux. Two modes: safe mode (orphans only) and `--deep` mode (heavy daemons like Gradle, Kotlin LSP, iOS Simulators).
 
+**Why orphaned processes occur:**
+- macOS lacks `prctl(PR_SET_PDEATHSIG)` — child processes don't auto-die when parent exits
+- MCP servers spawned by IDEs/terminals become orphaned when parent crashes or is force-quit
+- Node.js `child.kill()` doesn't wait for cleanup; signals don't propagate through nested `npm exec` wrappers
+- Flutter's shell wrapper receives SIGTERM but doesn't forward it to the underlying Dart VM
+
 ## Development Commands
 
 ```bash
-./clean-orphans          # Run safe orphan cleanup
-./clean-orphans --deep   # Aggressive cleanup (Gradle, Flutter daemon, simulators, etc.)
-./install.sh             # Install to ~/.local/bin/clean-orphans
-bash -n clean-orphans    # Syntax check
-shellcheck clean-orphans # Static lint (recommended)
+./clean-orphans                 # Run safe orphan cleanup
+./clean-orphans --deep          # Aggressive cleanup (Gradle, Flutter daemon, simulators)
+./clean-orphans --dry-run       # Preview what would be killed without terminating
+./install.sh                    # Install to ~/.local/bin/clean-orphans
+bash -n clean-orphans           # Syntax check
+shellcheck clean-orphans        # Static lint (recommended)
 ```
 
 ## Architecture
@@ -26,7 +33,14 @@ Single-file script (`clean-orphans`) with this flow:
 4. **Safe cleanup** — Finds processes matching patterns with `PPID=1`, plus orphaned `adb logcat`; kills via `kill_and_report()`
 5. **Deep cleanup** (`--deep`) — `cleanup_by_name()` targets non-orphaned heavy daemons (Kotlin LSP, Gradle, Flutter daemon); `cleanup_orphaned_by_name()` for xcodebuild (PPID=1 only); macOS-specific `xcrun simctl shutdown all` for iOS Simulators
 
-Key functions:
+**Safety strategy:**
+| Mode | What it targets | Safe for active work? |
+|------|-----------------|----------------------|
+| Safe (default) | Only `PPID=1` orphans matching `ORPHAN_PATTERNS` | Yes — active children always have living parent |
+| `--deep` | Adds Gradle, Kotlin LSP, Flutter daemon, iOS Simulators | May interrupt active builds |
+| `--dry-run` | Read-only preview | N/A |
+
+**Key functions:**
 - `report_stats(PIDS, LABEL)` — Calculates memory usage via `ps -o rss=` and prints report
 - `graceful_kill(PIDS)` — SIGTERM → wait 2s → SIGKILL fallback for stubborn processes; respects `--dry-run`
 - `kill_and_report(PIDS, LABEL)` — Combines `report_stats` + `graceful_kill`
